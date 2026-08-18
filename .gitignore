@@ -1,0 +1,7 @@
+env.sh
+isittho-env/
+__pycache__/
+*.pyc
+.DS_Store
+ingest_log.txt
+test_seed*.json

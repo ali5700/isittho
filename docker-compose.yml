@@ -1,0 +1,21 @@
+# Local dev database for isittho.
+# Run: docker compose up -d
+# This uses the official pgvector image, which is plain Postgres with the
+# pgvector extension pre-installed — nothing extra to compile yourself.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: isittho-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: isittho
+      POSTGRES_PASSWORD: isittho_dev_password
+      POSTGRES_DB: isittho
+    ports:
+      - "5432:5432"
+    volumes:
+      - isittho_pgdata:/var/lib/postgresql/data
+
+volumes:
+  isittho_pgdata:

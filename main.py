@@ -69,6 +69,28 @@ def get_db_connection():
 # work before this handles real user submissions.
 SENSITIVE_CATEGORIES = {"sex and intimacy", "jealousy and trust"}
 
+# Independent backstop: nearest-neighbor majority vote is matching on
+# phrasing similarity, not severity, so it can miss genuinely concerning
+# content when similar-sounding examples in the dataset happen to be
+# labeled less severely. Any of these phrases forces the support-resources
+# flag on regardless of what the vote says. Deliberately broad/imperfect —
+# false positives here (showing a resource someone didn't need) are a much
+# smaller cost than false negatives.
+SAFETY_KEYWORDS = [
+    "hit me", "hits me", "hitting me", "grabbed my", "grabbed me",
+    "pushed me", "shoved me", "choked me", "strangled", "punched",
+    "slapped", "threw me", "threw something at me", "afraid of him",
+    "afraid of her", "scared of him", "scared of her", "scared he'll",
+    "scared she'll", "threatened to hurt", "threatened me", "won't let me leave",
+    "locked me in", "locked me out", "took my phone away", "controls my money",
+    "forced me", "force me", "hurt me", "hurts me", "bruise", "bruises",
+]
+
+
+def contains_safety_keyword(text: str) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in SAFETY_KEYWORDS)
+
 
 CATEGORIES = [
     "finances", "jealousy and trust", "in-laws and family",
@@ -179,9 +201,13 @@ def check_situation(request: CheckRequest):
     labels, similar, top_label, top_categories = compute_verdict(rows)
 
     # Flag for support resources if the top result is a red flag AND it
-    # falls in a sensitive category. This is intentionally conservative
-    # and coarse — refine before handling real user submissions.
-    needs_support = top_label == "red_flag" and bool(top_categories & SENSITIVE_CATEGORIES)
+    # falls in a sensitive category, OR the text itself contains explicit
+    # safety-keyword language — this second check catches cases the
+    # similarity vote misses (see contains_safety_keyword docstring above).
+    needs_support = (
+        (top_label == "red_flag" and bool(top_categories & SENSITIVE_CATEGORIES))
+        or contains_safety_keyword(request.text)
+    )
 
     return CheckResponse(
         query=request.text,
@@ -211,16 +237,22 @@ def submit_situation(request: SubmitRequest):
     if rows:
         labels, similar, top_label, top_categories = compute_verdict(rows)
         inferred_category = request.category or similar[0].category
-        needs_support = top_label == "red_flag" and bool(top_categories & SENSITIVE_CATEGORIES)
+        needs_support = (
+            (top_label == "red_flag" and bool(top_categories & SENSITIVE_CATEGORIES))
+            or contains_safety_keyword(request.text)
+        )
     else:
         # Empty database edge case — store as an unlabeled yellow_flag
         # rather than failing the submission outright.
         top_label = "yellow_flag"
         inferred_category = request.category or "communication"
-        needs_support = False
+        needs_support = contains_safety_keyword(request.text)
 
     if request.category and request.category not in CATEGORIES:
         raise HTTPException(status_code=400, detail=f"category must be one of {CATEGORIES}")
+
+    if needs_support:
+        top_label = "red_flag"
 
     visible = not needs_support
 

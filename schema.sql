@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     relationship_stage TEXT,
     severity_band   TEXT,
     outcome_label   TEXT NOT NULL CHECK (outcome_label IN ('normal', 'yellow_flag', 'red_flag')),
+    label_is_provisional BOOLEAN NOT NULL DEFAULT false,
+    visible         BOOLEAN NOT NULL DEFAULT true,
     source          TEXT NOT NULL DEFAULT 'user' CHECK (source IN ('user', 'synthetic')),
     embedding       vector(1024),  -- voyage-3 outputs 1024-dim vectors
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -24,6 +26,7 @@ CREATE INDEX IF NOT EXISTS submissions_embedding_idx
 
 CREATE INDEX IF NOT EXISTS submissions_category_idx ON submissions (category);
 CREATE INDEX IF NOT EXISTS submissions_source_idx ON submissions (source);
+CREATE INDEX IF NOT EXISTS submissions_visible_idx ON submissions (visible);
 
 -- Optional: track community votes on ambiguous submissions, useful once
 -- you have real users weighing in on "normal vs red flag" for open cases.

@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -14,9 +13,8 @@ import {
 
 import { ApiError, checkSituation } from "../api/client";
 import type { CheckResponse } from "../api/types";
-
-const MIN_LENGTH = 10;
-const MAX_LENGTH = 2000;
+import SupportResourcesBanner from "../components/SupportResourcesBanner";
+import { MAX_SITUATION_LENGTH, MIN_SITUATION_LENGTH } from "../constants";
 
 const OUTCOME_COLORS: Record<string, string> = {
   red_flag: "#DC2626",
@@ -47,7 +45,8 @@ export default function CheckScreen() {
   const [result, setResult] = useState<CheckResponse | null>(null);
 
   const trimmedLength = text.trim().length;
-  const canSubmit = trimmedLength >= MIN_LENGTH && trimmedLength <= MAX_LENGTH && !loading;
+  const canSubmit =
+    trimmedLength >= MIN_SITUATION_LENGTH && trimmedLength <= MAX_SITUATION_LENGTH && !loading;
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -88,12 +87,12 @@ export default function CheckScreen() {
           placeholderTextColor="#9CA3AF"
           value={text}
           onChangeText={setText}
-          maxLength={MAX_LENGTH}
+          maxLength={MAX_SITUATION_LENGTH}
         />
         <Text style={styles.charCount}>
-          {trimmedLength}/{MAX_LENGTH}
-          {trimmedLength > 0 && trimmedLength < MIN_LENGTH
-            ? ` — need at least ${MIN_LENGTH} characters`
+          {trimmedLength}/{MAX_SITUATION_LENGTH}
+          {trimmedLength > 0 && trimmedLength < MIN_SITUATION_LENGTH
+            ? ` — need at least ${MIN_SITUATION_LENGTH} characters`
             : ""}
         </Text>
 
@@ -117,7 +116,7 @@ export default function CheckScreen() {
 
         {result && (
           <View style={styles.results}>
-            {result.needs_support_resources && <SupportBanner />}
+            {result.needs_support_resources && <SupportResourcesBanner />}
 
             <Text style={styles.sectionTitle}>Verdict</Text>
             <View style={styles.verdictSummary}>
@@ -174,21 +173,6 @@ export default function CheckScreen() {
         )}
       </ScrollView>
     </KeyboardAvoidingView>
-  );
-}
-
-function SupportBanner() {
-  return (
-    <View style={styles.supportBanner}>
-      <Text style={styles.supportTitle}>You don't have to sort through this alone</Text>
-      <Text style={styles.supportBody}>
-        Situations like this can be heavy. If you'd like to talk to someone, the National
-        Domestic Violence Hotline is available 24/7.
-      </Text>
-      <Pressable onPress={() => Linking.openURL("tel:18007997233")}>
-        <Text style={styles.supportLink}>Call 1-800-799-7233</Text>
-      </Pressable>
-    </View>
   );
 }
 
@@ -268,15 +252,4 @@ const styles = StyleSheet.create({
   cardOutcome: { fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
   cardText: { fontSize: 14, color: "#1F2937", lineHeight: 20 },
   cardSimilarity: { fontSize: 11, color: "#9CA3AF", marginTop: 8 },
-  supportBanner: {
-    backgroundColor: "#FFF7ED",
-    borderColor: "#FDBA74",
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 8,
-  },
-  supportTitle: { fontSize: 15, fontWeight: "700", color: "#9A3412", marginBottom: 6 },
-  supportBody: { fontSize: 13, color: "#7C2D12", lineHeight: 18, marginBottom: 10 },
-  supportLink: { fontSize: 14, fontWeight: "700", color: "#C2410C" },
 });

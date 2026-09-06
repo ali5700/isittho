@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../config";
-import type { ApiErrorPayload, CheckResponse } from "./types";
+import type { ApiErrorPayload, CheckResponse, SubmitResponse } from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -11,13 +11,13 @@ export class ApiError extends Error {
   }
 }
 
-export async function checkSituation(text: string): Promise<CheckResponse> {
+async function postJson<T>(path: string, body: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/check`, {
+    response = await fetch(`${API_BASE_URL}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
     });
   } catch {
     throw new ApiError(
@@ -37,5 +37,13 @@ export async function checkSituation(text: string): Promise<CheckResponse> {
     throw new ApiError(detail, response.status);
   }
 
-  return (await response.json()) as CheckResponse;
+  return (await response.json()) as T;
+}
+
+export function checkSituation(text: string): Promise<CheckResponse> {
+  return postJson<CheckResponse>("/check", { text });
+}
+
+export function submitSituation(text: string): Promise<SubmitResponse> {
+  return postJson<SubmitResponse>("/submit", { text });
 }

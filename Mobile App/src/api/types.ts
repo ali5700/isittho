@@ -15,6 +15,15 @@ export interface CheckResponse {
   needs_support_resources: boolean;
 }
 
+export interface SubmitResponse {
+  id: number;
+  category: string;
+  provisional_label: string;
+  visible: boolean;
+  needs_support_resources: boolean;
+  message: string;
+}
+
 export interface ApiErrorPayload {
   detail: string;
 }

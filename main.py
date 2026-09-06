@@ -126,9 +126,6 @@ class SubmitRequest(BaseModel):
 
 class SubmitResponse(BaseModel):
     id: int
-    category: str
-    provisional_label: str
-    visible: bool
     needs_support_resources: bool
     message: str
 
@@ -283,9 +280,6 @@ def submit_situation(request: SubmitRequest):
 
     return SubmitResponse(
         id=new_id,
-        category=inferred_category,
-        provisional_label=top_label,
-        visible=visible,
         needs_support_resources=needs_support,
         message=message,
     )

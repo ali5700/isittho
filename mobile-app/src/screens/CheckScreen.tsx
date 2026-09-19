@@ -13,6 +13,7 @@ import {
 
 import { ApiError, checkSituation } from "../api/client";
 import type { CheckResponse } from "../api/types";
+import SimilarSituationCard from "../components/SimilarSituationCard";
 import SupportResourcesBanner from "../components/SupportResourcesBanner";
 import { MAX_SITUATION_LENGTH, MIN_SITUATION_LENGTH } from "../constants";
 
@@ -154,20 +155,14 @@ export default function CheckScreen() {
 
             <Text style={styles.sectionTitle}>Similar situations</Text>
             {result.similar_submissions.map((item, idx) => (
-              <View key={idx} style={styles.card}>
-                <View style={styles.cardHeader}>
-                  <Text style={styles.cardCategory}>{item.category}</Text>
-                  <Text
-                    style={[styles.cardOutcome, { color: outcomeColor(item.outcome_label) }]}
-                  >
-                    {formatLabel(item.outcome_label)}
-                  </Text>
-                </View>
-                <Text style={styles.cardText}>{item.text_preview}</Text>
-                <Text style={styles.cardSimilarity}>
-                  {Math.round(item.similarity * 100)}% similar
-                </Text>
-              </View>
+              <SimilarSituationCard
+                key={idx}
+                category={item.category}
+                outcomeLabel={formatLabel(item.outcome_label)}
+                outcomeColor={outcomeColor(item.outcome_label)}
+                text={item.text}
+                similarity={item.similarity}
+              />
             ))}
           </View>
         )}
@@ -241,15 +236,4 @@ const styles = StyleSheet.create({
   },
   breakdownBarFill: { height: 8, borderRadius: 4 },
   breakdownCount: { width: 24, fontSize: 13, color: "#6B7280", textAlign: "right" },
-  card: {
-    backgroundColor: "#F9FAFB",
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
-  },
-  cardHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  cardCategory: { fontSize: 12, color: "#6B7280", textTransform: "capitalize" },
-  cardOutcome: { fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
-  cardText: { fontSize: 14, color: "#1F2937", lineHeight: 20 },
-  cardSimilarity: { fontSize: 11, color: "#9CA3AF", marginTop: 8 },
 });

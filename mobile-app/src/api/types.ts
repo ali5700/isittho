@@ -1,7 +1,7 @@
 // Mirrors the Pydantic models in the isittho FastAPI backend (main.py).
 
 export interface SimilarSubmission {
-  text_preview: string;
+  text: string;
   category: string;
   outcome_label: string;
   similarity: number;
@@ -17,9 +17,6 @@ export interface CheckResponse {
 
 export interface SubmitResponse {
   id: number;
-  category: string;
-  provisional_label: string;
-  visible: boolean;
   needs_support_resources: boolean;
   message: string;
 }

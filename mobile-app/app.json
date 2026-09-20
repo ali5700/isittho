@@ -8,7 +8,6 @@
     "userInterfaceStyle": "light",
     "ios": {
       "bundleIdentifier": "com.isittho.app",
-      "buildNumber": "1",
       "supportsTablet": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false

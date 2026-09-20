@@ -19,6 +19,7 @@ FastAPI generates this automatically from the code below.
 """
 
 import os
+import uuid
 from collections import Counter
 from typing import Optional
 
@@ -112,11 +113,22 @@ class SimilarSubmission(BaseModel):
 
 
 class CheckResponse(BaseModel):
+    check_id: str
     query: str
     similar_submissions: list[SimilarSubmission]
     verdict_breakdown: dict
     top_label: str
     needs_support_resources: bool
+
+
+class ConfirmSubmitRequest(BaseModel):
+    check_id: str = Field(..., description="The check_id returned by a prior /check call")
+
+
+class ConfirmSubmitResponse(BaseModel):
+    id: int
+    needs_support_resources: bool
+    message: str
 
 
 class SubmitRequest(BaseModel):
@@ -190,7 +202,7 @@ def health():
 
 @app.post("/check", response_model=CheckResponse)
 def check_situation(request: CheckRequest):
-    _, rows = find_similar(request.text, input_type="query")
+    embedding, rows = find_similar(request.text, input_type="query")
 
     if not rows:
         raise HTTPException(status_code=404, detail="No submissions in database yet")
@@ -206,7 +218,27 @@ def check_situation(request: CheckRequest):
         or contains_safety_keyword(request.text)
     )
 
+    inferred_category = similar[0].category if similar else "communication"
+    stored_label = "red_flag" if needs_support else top_label
+    check_id = str(uuid.uuid4())
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pending_checks
+                        (id, text, category, outcome_label, needs_support_resources, embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (check_id, request.text, inferred_category, stored_label, needs_support, embedding),
+                )
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database insert failed: {e}")
+
     return CheckResponse(
+        check_id=check_id,
         query=request.text,
         similar_submissions=similar,
         verdict_breakdown=dict(labels),
@@ -215,7 +247,70 @@ def check_situation(request: CheckRequest):
     )
 
 
-@app.post("/submit", response_model=SubmitResponse)
+@app.post("/confirm_submit", response_model=ConfirmSubmitResponse)
+def confirm_submit(request: ConfirmSubmitRequest):
+    """Redeems a check_id from a prior /check call, adding that same text
+    to the submissions pool without re-embedding or asking the person to
+    retype anything. This is the "Add to the pool?" follow-up shown after
+    a Check result."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT text, category, outcome_label, needs_support_resources, embedding
+                    FROM pending_checks WHERE id = %s
+                    """,
+                    (request.check_id,),
+                )
+                row = cur.fetchone()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database query failed: {e}")
+
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="check_id not found or expired — run /check again before confirming",
+        )
+
+    text, category, outcome_label, needs_support, embedding = row
+    visible = not needs_support
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO submissions
+                        (text, category, outcome_label, label_is_provisional,
+                         visible, source, embedding)
+                    VALUES (%s, %s, %s, true, %s, 'user', %s)
+                    RETURNING id
+                    """,
+                    (text, category, outcome_label, visible, embedding),
+                )
+                new_id = cur.fetchone()[0]
+                # One-time use — remove the pending row now that it's redeemed.
+                cur.execute("DELETE FROM pending_checks WHERE id = %s", (request.check_id,))
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database insert failed: {e}")
+
+    message = (
+        "Thanks for sharing. This situation touches on something sensitive, "
+        "so it'll be reviewed before appearing in others' results."
+        if needs_support else
+        "Thanks for sharing — this is now part of the pool other people will see."
+    )
+
+    return ConfirmSubmitResponse(
+        id=new_id,
+        needs_support_resources=needs_support,
+        message=message,
+    )
+
+
+
 def submit_situation(request: SubmitRequest):
     """Adds a real user's situation to the database.
 

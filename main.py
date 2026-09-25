@@ -25,9 +25,11 @@ from typing import Optional
 
 import psycopg
 import voyageai
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+import auth
 
 EMBED_MODEL = "voyage-3"
 TOP_K = 10
@@ -62,6 +64,141 @@ def get_db_connection():
     if not database_url:
         raise HTTPException(status_code=500, detail="DATABASE_URL not set on server")
     return psycopg.connect(database_url)
+
+
+GENDERS = {"woman", "man", "non-binary", "prefer not to say"}
+RELATIONSHIP_STATUSES = {
+    "single", "dating", "in a relationship", "engaged", "married",
+    "separated", "divorced", "it's complicated",
+}
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str = Field(..., min_length=8)
+    exact_age: int = Field(..., ge=13, le=120)
+    gender: str
+    relationship_status: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class SocialSignInRequest(BaseModel):
+    identity_token: str = Field(..., description="The token returned by Apple/Google's native sign-in SDK")
+    client_id: str = Field(..., description="Your app's bundle ID (Apple) or OAuth client ID (Google)")
+    # Only needed the first time this person signs in — ignored on
+    # subsequent logins once the account already has these on file.
+    exact_age: Optional[int] = Field(None, ge=13, le=120)
+    gender: Optional[str] = None
+    relationship_status: Optional[str] = None
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user_id: int
+    is_new_account: bool
+
+
+def _validate_profile_fields(gender: str, relationship_status: str):
+    if gender not in GENDERS:
+        raise HTTPException(status_code=400, detail=f"gender must be one of {sorted(GENDERS)}")
+    if relationship_status not in RELATIONSHIP_STATUSES:
+        raise HTTPException(status_code=400, detail=f"relationship_status must be one of {sorted(RELATIONSHIP_STATUSES)}")
+
+
+@app.post("/auth/signup", response_model=AuthResponse)
+def signup(request: SignupRequest):
+    _validate_profile_fields(request.gender, request.relationship_status)
+    password_hash = auth.hash_password(request.password)
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE email = %s", (request.email,))
+                if cur.fetchone():
+                    raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+                cur.execute(
+                    """
+                    INSERT INTO users (email, password_hash, exact_age, gender, relationship_status)
+                    VALUES (%s, %s, %s, %s, %s) RETURNING id
+                    """,
+                    (request.email, password_hash, request.exact_age, request.gender, request.relationship_status),
+                )
+                user_id = cur.fetchone()[0]
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Signup failed: {e}")
+
+    return AuthResponse(token=auth.issue_token(user_id), user_id=user_id, is_new_account=True)
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login(request: LoginRequest):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (request.email,))
+                row = cur.fetchone()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Login failed: {e}")
+
+    if not row or not row[1] or not auth.verify_password(request.password, row[1]):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
+    return AuthResponse(token=auth.issue_token(row[0]), user_id=row[0], is_new_account=False)
+
+
+def _social_sign_in(sub: str, provider_column: str, request: SocialSignInRequest):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT id FROM users WHERE {provider_column} = %s", (sub,))
+                row = cur.fetchone()
+
+                if row:
+                    return AuthResponse(token=auth.issue_token(row[0]), user_id=row[0], is_new_account=False)
+
+                # New account — profile fields are required on first sign-in.
+                if not (request.exact_age and request.gender and request.relationship_status):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="First-time sign-in requires exact_age, gender, and relationship_status",
+                    )
+                _validate_profile_fields(request.gender, request.relationship_status)
+
+                cur.execute(
+                    f"""
+                    INSERT INTO users ({provider_column}, exact_age, gender, relationship_status)
+                    VALUES (%s, %s, %s, %s) RETURNING id
+                    """,
+                    (sub, request.exact_age, request.gender, request.relationship_status),
+                )
+                user_id = cur.fetchone()[0]
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sign-in failed: {e}")
+
+    return AuthResponse(token=auth.issue_token(user_id), user_id=user_id, is_new_account=True)
+
+
+@app.post("/auth/apple", response_model=AuthResponse)
+def apple_sign_in(request: SocialSignInRequest):
+    sub = auth.verify_apple_identity_token(request.identity_token, request.client_id)
+    return _social_sign_in(sub, "apple_sub", request)
+
+
+@app.post("/auth/google", response_model=AuthResponse)
+def google_sign_in(request: SocialSignInRequest):
+    sub = auth.verify_google_identity_token(request.identity_token, request.client_id)
+    return _social_sign_in(sub, "google_sub", request)
 
 
 # Categories where a red_flag result should surface support resources
@@ -201,7 +338,7 @@ def health():
 
 
 @app.post("/check", response_model=CheckResponse)
-def check_situation(request: CheckRequest):
+def check_situation(request: CheckRequest, user_id: int = Depends(auth.get_current_user_id)):
     embedding, rows = find_similar(request.text, input_type="query")
 
     if not rows:
@@ -248,7 +385,7 @@ def check_situation(request: CheckRequest):
 
 
 @app.post("/confirm_submit", response_model=ConfirmSubmitResponse)
-def confirm_submit(request: ConfirmSubmitRequest):
+def confirm_submit(request: ConfirmSubmitRequest, user_id: int = Depends(auth.get_current_user_id)):
     """Redeems a check_id from a prior /check call, adding that same text
     to the submissions pool without re-embedding or asking the person to
     retype anything. This is the "Add to the pool?" follow-up shown after
@@ -283,11 +420,11 @@ def confirm_submit(request: ConfirmSubmitRequest):
                     """
                     INSERT INTO submissions
                         (text, category, outcome_label, label_is_provisional,
-                         visible, source, embedding)
-                    VALUES (%s, %s, %s, true, %s, 'user', %s)
+                         visible, source, embedding, user_id)
+                    VALUES (%s, %s, %s, true, %s, 'user', %s, %s)
                     RETURNING id
                     """,
-                    (text, category, outcome_label, visible, embedding),
+                    (text, category, outcome_label, visible, embedding, user_id),
                 )
                 new_id = cur.fetchone()[0]
                 # One-time use — remove the pending row now that it's redeemed.
@@ -310,8 +447,8 @@ def confirm_submit(request: ConfirmSubmitRequest):
     )
 
 
-
-def submit_situation(request: SubmitRequest):
+@app.post("/submit", response_model=SubmitResponse)
+def submit_situation(request: SubmitRequest, user_id: int = Depends(auth.get_current_user_id)):
     """Adds a real user's situation to the database.
 
     A provisional label and category are derived from nearest existing
@@ -355,11 +492,11 @@ def submit_situation(request: SubmitRequest):
                     """
                     INSERT INTO submissions
                         (text, category, outcome_label, label_is_provisional,
-                         visible, source, embedding)
-                    VALUES (%s, %s, %s, true, %s, 'user', %s)
+                         visible, source, embedding, user_id)
+                    VALUES (%s, %s, %s, true, %s, 'user', %s, %s)
                     RETURNING id
                     """,
-                    (request.text, inferred_category, top_label, visible, embedding),
+                    (request.text, inferred_category, top_label, visible, embedding, user_id),
                 )
                 new_id = cur.fetchone()[0]
             conn.commit()

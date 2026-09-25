@@ -3,3 +3,7 @@ voyageai>=0.2
 python-dotenv>=1.0
 fastapi>=0.110
 uvicorn>=0.29
+pyjwt>=2.8
+passlib[bcrypt]>=1.7
+google-auth>=2.28
+requests>=2.31

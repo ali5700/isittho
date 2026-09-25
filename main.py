@@ -337,6 +337,15 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug/env-check")
+def debug_env_check():
+    """Temporary — confirms which expected env vars this specific running
+    container actually sees, without exposing their values. Remove once
+    the JWT_SECRET issue is resolved."""
+    keys_to_check = ["JWT_SECRET", "DATABASE_URL", "VOYAGE_API_KEY"]
+    return {k: (k in os.environ and bool(os.environ.get(k))) for k in keys_to_check}
+
+
 @app.post("/check", response_model=CheckResponse)
 def check_situation(request: CheckRequest, user_id: int = Depends(auth.get_current_user_id)):
     embedding, rows = find_similar(request.text, input_type="query")

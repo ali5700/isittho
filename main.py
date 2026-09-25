@@ -337,17 +337,6 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/debug/env-check")
-def debug_env_check():
-    """Temporary — confirms which expected env vars this specific running
-    container actually sees, without exposing their values. Also lists
-    any key containing JWT or SECRET, to catch a naming mismatch (extra
-    space, wrong case, etc.) Remove once the JWT_SECRET issue is resolved."""
-    keys_to_check = ["JWT_SECRET", "DATABASE_URL", "VOYAGE_API_KEY"]
-    exact_match = {k: (k in os.environ and bool(os.environ.get(k))) for k in keys_to_check}
-    similar_keys = [repr(k) for k in os.environ.keys() if "JWT" in k.upper() or "SECRET" in k.upper()]
-    return {"exact_match": exact_match, "similar_keys_found": similar_keys}
-
 
 @app.post("/check", response_model=CheckResponse)
 def check_situation(request: CheckRequest, user_id: int = Depends(auth.get_current_user_id)):

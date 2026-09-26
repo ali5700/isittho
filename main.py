@@ -229,6 +229,139 @@ def google_auth_redirect():
 </html>"""
 
 
+class UpdateProfileRequest(BaseModel):
+    exact_age: Optional[int] = Field(None, ge=13, le=120)
+    gender: Optional[str] = None
+    relationship_status: Optional[str] = None
+
+
+class UpdateProfileResponse(BaseModel):
+    exact_age: Optional[int]
+    gender: Optional[str]
+    relationship_status: Optional[str]
+
+
+@app.patch("/account", response_model=UpdateProfileResponse)
+def update_profile(request: UpdateProfileRequest, user_id: int = Depends(auth.get_current_user_id)):
+    """Updates only the fields provided — anything left as null is unchanged."""
+    if request.gender is not None and request.gender not in GENDERS:
+        raise HTTPException(status_code=400, detail=f"gender must be one of {sorted(GENDERS)}")
+    if request.relationship_status is not None and request.relationship_status not in RELATIONSHIP_STATUSES:
+        raise HTTPException(status_code=400, detail=f"relationship_status must be one of {sorted(RELATIONSHIP_STATUSES)}")
+
+    updates = request.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+
+    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    values = list(updates.values()) + [user_id]
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE users SET {set_clause} WHERE id = %s "
+                    "RETURNING exact_age, gender, relationship_status",
+                    values,
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Update failed: {e}")
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return UpdateProfileResponse(exact_age=row[0], gender=row[1], relationship_status=row[2])
+
+
+@app.delete("/account")
+def delete_account(user_id: int = Depends(auth.get_current_user_id)):
+    """Deletes the account. Submissions stay (they're already anonymous —
+    no text tied to identity is ever shown to other users) but their
+    user_id link is cleared, so nothing connects them to this person
+    anymore."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE submissions SET user_id = NULL WHERE user_id = %s", (user_id,))
+                cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Delete failed: {e}")
+
+    return {"message": "Account deleted."}
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8)
+
+
+@app.post("/auth/forgot-password")
+def forgot_password(request: ForgotPasswordRequest):
+    """Always returns the same generic message, whether or not the email
+    exists — this avoids leaking which emails have accounts."""
+    generic_response = {"message": "If an account exists for that email, a reset link has been sent."}
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE email = %s", (request.email,))
+                row = cur.fetchone()
+                if not row:
+                    return generic_response
+
+                user_id = row[0]
+                token = uuid.uuid4().hex
+                cur.execute(
+                    """
+                    INSERT INTO password_reset_tokens (token, user_id, expires_at)
+                    VALUES (%s, %s, now() + interval '1 hour')
+                    """,
+                    (token, user_id),
+                )
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Request failed: {e}")
+
+    auth.send_password_reset_email(request.email, token)
+    return generic_response
+
+
+@app.post("/auth/reset-password")
+def reset_password(request: ResetPasswordRequest):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id FROM password_reset_tokens
+                    WHERE token = %s AND used = false AND expires_at > now()
+                    """,
+                    (request.token,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+
+                user_id = row[0]
+                password_hash = auth.hash_password(request.new_password)
+                cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (password_hash, user_id))
+                cur.execute("UPDATE password_reset_tokens SET used = true WHERE token = %s", (request.token,))
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Reset failed: {e}")
+
+    return {"message": "Password updated. You can now log in with your new password."}
+
+
 # Categories where a red_flag result should surface support resources
 # rather than just a stats breakdown. This is a coarse, keyword-level
 # starting point — not a substitute for real moderation/classification
@@ -358,6 +491,116 @@ def compute_verdict(rows):
     top_label, _ = labels.most_common(1)[0]
     top_categories = {s.category for s in similar[:3]}
     return labels, similar, top_label, top_categories
+
+
+MOODS = {"good", "neutral", "rough"}
+
+
+class CheckinRequest(BaseModel):
+    mood: str = Field(..., description="One of: good, neutral, rough")
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class CheckinResponse(BaseModel):
+    id: int
+    mood: str
+    note: Optional[str]
+    checkin_date: str
+    streak: int
+
+
+class CheckinHistoryEntry(BaseModel):
+    mood: str
+    note: Optional[str]
+    checkin_date: str
+
+
+def _compute_streak(cur, user_id: int) -> int:
+    """Consecutive days ending today (or yesterday, so missing *today's*
+    entry doesn't zero out a real streak while there's still time to log it)."""
+    cur.execute(
+        "SELECT checkin_date FROM mood_checkins WHERE user_id = %s ORDER BY checkin_date DESC",
+        (user_id,),
+    )
+    dates = [row[0] for row in cur.fetchall()]
+    if not dates:
+        return 0
+
+    from datetime import date, timedelta
+    today = date.today()
+    streak = 0
+    expected = today if dates[0] == today else today - timedelta(days=1)
+    for d in dates:
+        if d == expected:
+            streak += 1
+            expected -= timedelta(days=1)
+        elif d < expected:
+            break
+    return streak
+
+
+@app.post("/checkins", response_model=CheckinResponse)
+def log_checkin(request: CheckinRequest, user_id: int = Depends(auth.get_current_user_id)):
+    """Logs (or updates) today's mood check-in. One per user per day —
+    submitting again today overwrites today's entry rather than
+    duplicating it."""
+    if request.mood not in MOODS:
+        raise HTTPException(status_code=400, detail=f"mood must be one of {sorted(MOODS)}")
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO mood_checkins (user_id, mood, note, checkin_date)
+                    VALUES (%s, %s, %s, CURRENT_DATE)
+                    ON CONFLICT (user_id, checkin_date)
+                    DO UPDATE SET mood = EXCLUDED.mood, note = EXCLUDED.note
+                    RETURNING id, mood, note, checkin_date
+                    """,
+                    (user_id, request.mood, request.note),
+                )
+                row = cur.fetchone()
+                streak = _compute_streak(cur, user_id)
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Check-in failed: {e}")
+
+    return CheckinResponse(
+        id=row[0], mood=row[1], note=row[2], checkin_date=str(row[3]), streak=streak,
+    )
+
+
+@app.get("/checkins/history", response_model=list[CheckinHistoryEntry])
+def checkin_history(days: int = 30, user_id: int = Depends(auth.get_current_user_id)):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT mood, note, checkin_date FROM mood_checkins
+                    WHERE user_id = %s AND checkin_date >= CURRENT_DATE - %s::int
+                    ORDER BY checkin_date DESC
+                    """,
+                    (user_id, days),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"History fetch failed: {e}")
+
+    return [CheckinHistoryEntry(mood=r[0], note=r[1], checkin_date=str(r[2])) for r in rows]
+
+
+@app.get("/checkins/streak")
+def checkin_streak(user_id: int = Depends(auth.get_current_user_id)):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                streak = _compute_streak(cur, user_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Streak fetch failed: {e}")
+
+    return {"streak": streak}
 
 
 @app.get("/health")

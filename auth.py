@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import requests
 import bcrypt
+import resend
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from google.oauth2 import id_token as google_id_token
@@ -32,6 +33,33 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRES_DAYS = 90
 
 bearer_scheme = HTTPBearer()
+
+# The app should deep-link this into its reset-password screen, passing
+# the token along (e.g. isittho://reset-password?token=...). Set this to
+# your actual app scheme/domain once the app side is wired up.
+RESET_LINK_BASE = os.environ.get("PASSWORD_RESET_LINK_BASE", "https://isittho.co/reset-password")
+
+
+def send_password_reset_email(to_email: str, token: str):
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        # Fails loudly in logs rather than silently pretending an email
+        # was sent — worth noticing during setup, not in production use.
+        print(f"WARNING: RESEND_API_KEY not set — reset email to {to_email} not sent. Token: {token}")
+        return
+
+    resend.api_key = api_key
+    reset_url = f"{RESET_LINK_BASE}?token={token}"
+    resend.Emails.send({
+        "from": os.environ.get("RESEND_FROM_EMAIL", "isittho <noreply@isittho.co>"),
+        "to": to_email,
+        "subject": "Reset your isittho password",
+        "html": (
+            f"<p>Someone requested a password reset for your isittho account.</p>"
+            f"<p><a href='{reset_url}'>Reset your password</a></p>"
+            f"<p>This link expires in 1 hour. If you didn't request this, you can ignore this email.</p>"
+        ),
+    })
 
 # Apple's public keys, cached and refreshed occasionally rather than
 # fetched on every request.

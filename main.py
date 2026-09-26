@@ -27,6 +27,7 @@ import psycopg
 import voyageai
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 import auth
@@ -199,6 +200,33 @@ def apple_sign_in(request: SocialSignInRequest):
 def google_sign_in(request: SocialSignInRequest):
     sub = auth.verify_google_identity_token(request.identity_token, request.client_id)
     return _social_sign_in(sub, "google_sub", request)
+
+
+# Google's OAuth "Web application" client type requires a real HTTPS
+# redirect URI (custom app schemes like isittho:// are rejected outright).
+# This page exists purely so Google has somewhere to send the browser back
+# to — expo-auth-session intercepts that navigation (URL, fragment and
+# all) at the WebView/browser level before this page's own script would
+# even run, so the redirect below is just a courtesy fallback for anyone
+# who ends up here outside of that in-app auth flow.
+@app.get("/auth/google-redirect", response_class=HTMLResponse)
+def google_auth_redirect():
+    return """<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Signing in…</title></head>
+<body style="font-family: -apple-system, sans-serif; text-align: center; padding-top: 80px; color: #111827;">
+  <p>Signing you in…</p>
+  <p style="color: #6B7280; font-size: 14px;">You can close this window if it doesn't return automatically.</p>
+  <script>
+    var hash = new URLSearchParams(window.location.hash.substring(1));
+    var query = new URLSearchParams(window.location.search);
+    var merged = new URLSearchParams();
+    query.forEach(function (v, k) { merged.set(k, v); });
+    hash.forEach(function (v, k) { merged.set(k, v); });
+    window.location.replace("isittho://google-auth-callback?" + merged.toString());
+  </script>
+</body>
+</html>"""
 
 
 # Categories where a red_flag result should surface support resources
